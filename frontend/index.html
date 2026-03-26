@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palm Oil Estate Intelligence Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0D1F3C; color: #fff; min-height: 100vh; }
+
+  .header { background: linear-gradient(135deg, #0D1F3C, #162d50); padding: 18px 30px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #00897B; }
+  .header h1 { font-size: 22px; font-weight: 600; }
+  .header h1 span { color: #00897B; }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #4caf50; display: inline-block; }
+  .status-dot.running { background: #F9A825; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .btn { background: #00897B; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.2s; }
+  .btn:hover { background: #00796B; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .grid { display: grid; gap: 16px; padding: 20px 30px; }
+  .grid-top { grid-template-columns: repeat(4, 1fr); }
+  .grid-main { grid-template-columns: 1fr 1fr; }
+  .grid-bottom { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-alerts { grid-template-columns: 2fr 1fr; }
+
+  .card { background: #162d50; border-radius: 10px; padding: 20px; border: 1px solid rgba(255,255,255,0.06); }
+  .card h3 { font-size: 13px; color: #90a4ae; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+
+  .kpi-value { font-size: 28px; font-weight: 700; color: #F9A825; }
+  .kpi-sub { font-size: 12px; color: #78909c; margin-top: 4px; }
+
+  .ticker { background: #1a3358; padding: 12px 30px; display: flex; align-items: center; gap: 20px; font-size: 13px; overflow: hidden; }
+  .ticker-label { color: #00897B; font-weight: 600; white-space: nowrap; }
+  .ticker-price { color: #F9A825; font-weight: 700; font-size: 16px; }
+  .ticker-change { font-size: 12px; }
+  .ticker-change.up { color: #4caf50; }
+  .ticker-change.down { color: #ef5350; }
+
+  .alert-item { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; border-left: 4px solid; }
+  .alert-item.red { background: rgba(239,83,80,0.12); border-color: #ef5350; }
+  .alert-item.amber { background: rgba(249,168,37,0.12); border-color: #F9A825; }
+  .alert-item.green { background: rgba(76,175,80,0.12); border-color: #4caf50; }
+  .alert-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+  .alert-dot.red { background: #ef5350; } .alert-dot.amber { background: #F9A825; } .alert-dot.green { background: #4caf50; }
+
+  .log-feed { height: 260px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; color: #78909c; line-height: 1.8; }
+  .log-feed div { border-bottom: 1px solid rgba(255,255,255,0.03); padding: 2px 0; }
+
+  .estate-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .estate-name { font-weight: 600; font-size: 15px; }
+  .estate-bar { height: 8px; border-radius: 4px; background: #263850; flex: 1; margin: 0 16px; max-width: 160px; }
+  .estate-bar-fill { height: 100%; border-radius: 4px; background: #00897B; }
+  .estate-profit { font-weight: 600; font-size: 14px; }
+  .estate-profit.positive { color: #4caf50; }
+  .estate-profit.negative { color: #ef5350; }
+
+  .forecast-card { text-align: center; padding: 20px; }
+  .forecast-period { font-size: 13px; color: #90a4ae; margin-bottom: 6px; }
+  .forecast-value { font-size: 24px; font-weight: 700; color: #00897B; }
+  .forecast-sub { font-size: 12px; color: #78909c; margin-top: 4px; }
+
+  canvas { max-height: 260px; }
+
+  @media (max-width: 900px) {
+    .grid-top, .grid-main, .grid-bottom, .grid-alerts { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🌴 <span>Palm Oil</span> Estate Intelligence</h1>
+  <div class="header-right">
+    <label class="btn" style="background:#1a3358;border:1px dashed #00897B;cursor:pointer">
+      📁 Upload Data
+      <input type="file" id="fileInput" accept=".json,.csv" style="display:none" onchange="uploadFile(this)">
+    </label>
+    <span id="statusText" style="font-size:13px;color:#90a4ae">Upload a file to start...</span>
+    <span class="status-dot" id="statusDot"></span>
+    <button class="btn" id="runBtn" onclick="triggerPipeline()">▶ Run Pipeline Now</button>
+  </div>
+</div>
+
+<!-- CPO Ticker -->
+<div class="ticker">
+  <span class="ticker-label">CPO PRICE (Simulated)</span>
+  <span class="ticker-price" id="cpoPrice">₦ --</span>
+  <span class="ticker-change" id="cpoChange">--</span>
+  <span style="color:#546e7a;margin-left:auto;font-size:12px" id="cpoTime"></span>
+</div>
+
+<!-- KPI Cards -->
+<div class="grid grid-top">
+  <div class="card">
+    <h3>Total Revenue</h3>
+    <div class="kpi-value" id="kpiRevenue">--</div>
+    <div class="kpi-sub">6-month aggregate</div>
+  </div>
+  <div class="card">
+    <h3>Profit Margin</h3>
+    <div class="kpi-value" id="kpiMargin">--</div>
+    <div class="kpi-sub">Gross margin</div>
+  </div>
+  <div class="card">
+    <h3>Yield Forecast (30d)</h3>
+    <div class="kpi-value" id="kpiYield">--</div>
+    <div class="kpi-sub">Projected tonnes</div>
+  </div>
+  <div class="card">
+    <h3>Cost vs Budget</h3>
+    <div class="kpi-value" id="kpiCost">--</div>
+    <div class="kpi-sub">Cost-to-revenue ratio</div>
+  </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid grid-main">
+  <div class="card">
+    <h3>Revenue vs Cost (Monthly)</h3>
+    <canvas id="revCostChart"></canvas>
+  </div>
+  <div class="card">
+    <h3>Cost Breakdown</h3>
+    <canvas id="costDonut"></canvas>
+  </div>
+</div>
+
+<!-- Forecast + Yield -->
+<div class="grid grid-main">
+  <div class="card">
+    <h3>30 / 60 / 90 Day Forecast</h3>
+    <div style="display:flex;gap:12px" id="forecastCards">
+      <div class="forecast-card" style="flex:1">
+        <div class="forecast-period">30 Days</div>
+        <div class="forecast-value" id="fc30">--</div>
+        <div class="forecast-sub" id="fc30sub"></div>
+      </div>
+      <div class="forecast-card" style="flex:1">
+        <div class="forecast-period">60 Days</div>
+        <div class="forecast-value" id="fc60">--</div>
+        <div class="forecast-sub" id="fc60sub"></div>
+      </div>
+      <div class="forecast-card" style="flex:1">
+        <div class="forecast-period">90 Days</div>
+        <div class="forecast-value" id="fc90">--</div>
+        <div class="forecast-sub" id="fc90sub"></div>
+      </div>
+    </div>
+    <p style="font-size:12px;color:#90a4ae;margin-top:14px;line-height:1.6" id="forecastSummary"></p>
+  </div>
+  <div class="card">
+    <h3>Yield Tracker (Blocs)</h3>
+    <canvas id="yieldChart"></canvas>
+  </div>
+</div>
+
+<!-- Alerts + Log -->
+<div class="grid grid-alerts">
+  <div class="card">
+    <h3>🚨 Alert Centre</h3>
+    <div id="alertList"><div class="alert-item green"><span class="alert-dot green"></span>Waiting for first pipeline run...</div></div>
+  </div>
+  <div class="card">
+    <h3>Agent Activity Log</h3>
+    <div class="log-feed" id="logFeed"><div>Waiting for pipeline...</div></div>
+  </div>
+</div>
+
+<!-- Estate Grid -->
+<div class="grid" style="padding-top:0">
+  <div class="card">
+    <h3>Estate Profitability Grid</h3>
+    <div id="estateGrid"></div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+const fmt = n => {
+  if (n == null) return '--';
+  if (Math.abs(n) >= 1e9) return '₦' + (n/1e9).toFixed(2) + 'B';
+  if (Math.abs(n) >= 1e6) return '₦' + (n/1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return '₦' + (n/1e3).toFixed(1) + 'K';
+  return '₦' + n.toFixed(0);
+};
+
+let revCostChart, costDonut, yieldChart;
+
+// ── CPO Ticker ──
+let cpoBase = 680000 + Math.random() * 20000;
+function updateTicker() {
+  const change = (Math.random() - 0.48) * 3000;
+  cpoBase += change;
+  document.getElementById('cpoPrice').textContent = '₦ ' + cpoBase.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '/MT';
+  const el = document.getElementById('cpoChange');
+  const pct = (change / cpoBase * 100).toFixed(2);
+  el.textContent = (change >= 0 ? '▲ +' : '▼ ') + pct + '%';
+  el.className = 'ticker-change ' + (change >= 0 ? 'up' : 'down');
+  document.getElementById('cpoTime').textContent = new Date().toLocaleTimeString();
+}
+setInterval(updateTicker, 8000);
+updateTicker();
+
+// ── Charts Init ──
+function initCharts() {
+  const chartOpts = { responsive: true, plugins: { legend: { labels: { color: '#90a4ae', font: { size: 11 } } } }, scales: { x: { ticks: { color: '#546e7a' }, grid: { color: 'rgba(255,255,255,0.04)' } }, y: { ticks: { color: '#546e7a' }, grid: { color: 'rgba(255,255,255,0.04)' } } } };
+
+  revCostChart = new Chart(document.getElementById('revCostChart'), {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Revenue', data: [], backgroundColor: '#00897B' },
+      { label: 'Cost', data: [], backgroundColor: '#F9A825' },
+    ]},
+    options: { ...chartOpts }
+  });
+
+  costDonut = new Chart(document.getElementById('costDonut'), {
+    type: 'doughnut',
+    data: { labels: ['Labour', 'Logistics', 'Fertiliser', 'Processing'], datasets: [{ data: [25,25,25,25], backgroundColor: ['#00897B','#F9A825','#ef5350','#42a5f5'] }] },
+    options: { responsive: true, plugins: { legend: { labels: { color: '#90a4ae', font: { size: 11 } } } } }
+  });
+
+  yieldChart = new Chart(document.getElementById('yieldChart'), {
+    type: 'line',
+    data: { labels: [], datasets: [] },
+    options: { ...chartOpts }
+  });
+}
+initCharts();
+
+// ── Data Fetchers ──
+async function fetchMetrics() {
+  try {
+    const r = await fetch(API + '/api/metrics');
+    const d = await r.json();
+    if (!d.total_revenue) return;
+
+    document.getElementById('kpiRevenue').textContent = fmt(d.total_revenue);
+    document.getElementById('kpiMargin').textContent = d.margin_pct + '%';
+    const costRatio = ((d.total_cost / d.total_revenue) * 100).toFixed(1);
+    document.getElementById('kpiCost').textContent = costRatio + '%';
+    document.getElementById('kpiCost').style.color = costRatio > 80 ? '#ef5350' : '#F9A825';
+
+    // Revenue vs Cost chart
+    if (d.monthly_trend && d.monthly_trend.length) {
+      revCostChart.data.labels = d.monthly_trend.map(m => m.month);
+      revCostChart.data.datasets[0].data = d.monthly_trend.map(m => m.revenue);
+      revCostChart.data.datasets[1].data = d.monthly_trend.map(m => m.cost);
+      revCostChart.update();
+    }
+
+    // Cost donut — dynamic categories
+    if (d.cost_breakdown) {
+      const cb = d.cost_breakdown;
+      const labels = Object.keys(cb).map(k => k.charAt(0).toUpperCase() + k.slice(1));
+      const values = Object.values(cb);
+      const colors = ['#00897B','#F9A825','#ef5350','#42a5f5','#ab47bc','#66bb6a','#ff7043','#26c6da'];
+      costDonut.data.labels = labels;
+      costDonut.data.datasets[0].data = values;
+      costDonut.data.datasets[0].backgroundColor = colors.slice(0, labels.length);
+      costDonut.update();
+    }
+  } catch (e) { console.error('metrics', e); }
+}
+
+async function fetchForecast() {
+  try {
+    const r = await fetch(API + '/api/forecast');
+    const d = await r.json();
+
+    if (d['30_day']) {
+      document.getElementById('fc30').textContent = fmt(d['30_day'].projected_revenue);
+      document.getElementById('fc30sub').textContent = 'Profit: ' + fmt(d['30_day'].projected_profit);
+      document.getElementById('kpiYield').textContent = (d['30_day'].projected_yield || '--') + ' t';
+    }
+    if (d['60_day']) {
+      document.getElementById('fc60').textContent = fmt(d['60_day'].projected_revenue);
+      document.getElementById('fc60sub').textContent = 'Profit: ' + fmt(d['60_day'].projected_profit);
+    }
+    if (d['90_day']) {
+      document.getElementById('fc90').textContent = fmt(d['90_day'].projected_revenue);
+      document.getElementById('fc90sub').textContent = 'Profit: ' + fmt(d['90_day'].projected_profit);
+    }
+    if (d.summary) {
+      document.getElementById('forecastSummary').textContent = '🤖 AI Forecast: ' + d.summary;
+    }
+  } catch (e) { console.error('forecast', e); }
+}
+
+async function fetchAlerts() {
+  try {
+    const r = await fetch(API + '/api/alerts');
+    const d = await r.json();
+    if (!d.length) return;
+    document.getElementById('alertList').innerHTML = d.map(a =>
+      `<div class="alert-item ${a.level}"><span class="alert-dot ${a.level}"></span>${a.message}</div>`
+    ).join('');
+  } catch (e) { console.error('alerts', e); }
+}
+
+async function fetchEstates() {
+  try {
+    const r = await fetch(API + '/api/estates');
+    const d = await r.json();
+    if (!d.length) return;
+
+    const maxRev = Math.max(...d.map(e => e.revenue));
+    document.getElementById('estateGrid').innerHTML = d.map(e => {
+      const pct = (e.revenue / maxRev * 100).toFixed(0);
+      const cls = e.profit >= 0 ? 'positive' : 'negative';
+      return `<div class="estate-row">
+        <span class="estate-name">${e.estate}</span>
+        <div class="estate-bar"><div class="estate-bar-fill" style="width:${pct}%"></div></div>
+        <span style="font-size:12px;color:#78909c;width:70px">Eff: ${e.cost_efficiency}%</span>
+        <span class="estate-profit ${cls}" style="width:100px;text-align:right">${fmt(e.profit)}</span>
+      </div>`;
+    }).join('');
+
+    // Build yield chart from estate data (simulated weekly from metrics)
+    // We'll use per-estate yield data
+    const yieldLabels = d.map(e => e.estate);
+    yieldChart.data.labels = yieldLabels;
+    yieldChart.data.datasets = [{
+      label: 'Total Yield (tonnes)',
+      data: d.map(e => e.total_yield),
+      borderColor: '#00897B',
+      backgroundColor: 'rgba(0,137,123,0.15)',
+      fill: true,
+      tension: 0.3,
+    }];
+    yieldChart.update();
+  } catch (e) { console.error('estates', e); }
+}
+
+async function fetchStatus() {
+  try {
+    const r = await fetch(API + '/api/pipeline-status');
+    const d = await r.json();
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    const btn = document.getElementById('runBtn');
+
+    if (d.status === 'running') {
+      dot.className = 'status-dot running';
+      txt.textContent = 'Pipeline running...';
+      btn.disabled = true;
+    } else {
+      dot.className = 'status-dot';
+      txt.textContent = d.last_run ? 'Last run: ' + new Date(d.last_run).toLocaleTimeString() : 'Ready';
+      btn.disabled = false;
+    }
+
+    if (d.logs && d.logs.length) {
+      const feed = document.getElementById('logFeed');
+      feed.innerHTML = d.logs.map(l => `<div>${l}</div>`).join('');
+      feed.scrollTop = feed.scrollHeight;
+    }
+  } catch (e) { console.error('status', e); }
+}
+
+async function triggerPipeline() {
+  document.getElementById('runBtn').disabled = true;
+  try {
+    await fetch(API + '/api/ingest', { method: 'POST' });
+  } catch (e) { console.error(e); }
+}
+
+async function uploadFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  document.getElementById('statusText').textContent = 'Uploading ' + file.name + '...';
+  try {
+    const r = await fetch(API + '/api/upload', { method: 'POST', body: formData });
+    const d = await r.json();
+    document.getElementById('statusText').textContent = d.message || d.error;
+    // Reset file input so same file can be re-uploaded
+    input.value = '';
+  } catch (e) {
+    document.getElementById('statusText').textContent = 'Upload failed';
+    console.error(e);
+  }
+}
+
+// ── Refresh loop ──
+async function refreshAll() {
+  await Promise.all([fetchStatus(), fetchMetrics(), fetchForecast(), fetchAlerts(), fetchEstates()]);
+}
+setInterval(refreshAll, 5000);
+refreshAll();
+</script>
+</body>
+</html>
