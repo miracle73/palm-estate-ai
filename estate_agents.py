@@ -18,7 +18,7 @@ DATA_FILE = "estate_data.json"
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=API_KEY,
+    api_key=os.getenv('API_TOKEN'),
 )
 set_default_openai_client(client)
 
@@ -81,68 +81,99 @@ def ingest_estate_data() -> str:
 
 
 @function_tool
-def unify_data() -> str:
-    """Normalise and unify the ingested estate data with smart column mapping."""
+async def unify_data() -> str:
+    """Use LLM to intelligently map any column names to standard fields, then unify data."""
     raw = pipeline_state["raw_data"]
     if not raw:
         return json.dumps({"error": "No raw data available"})
 
     columns = list(raw[0].keys())
+    sample_rows = raw[:3]
 
-    # Smart column matching — find best match for each needed field
-    def find_col(keywords, cols):
-        """Find column matching any keyword (case-insensitive, partial match)."""
-        for kw in keywords:
-            for c in cols:
-                if kw in c.lower().replace(" ", "_").replace("-", "_"):
-                    return c
-        return None
+    # ── LLM-powered column mapping ──────────────────────────────────
+    mapping_prompt = f"""You are a data engineer. I have a dataset with these columns:
+{json.dumps(columns)}
 
-    col_date = find_col(["date", "day", "period", "time"], columns)
-    col_estate = find_col(["estate", "farm", "plantation", "site", "location"], columns)
-    col_bloc = find_col(["bloc", "block", "section", "zone", "area", "field"], columns)
-    col_yield = find_col(["yield", "production", "output", "harvest", "tonnes"], columns)
-    col_revenue = find_col(["revenue", "sales", "income", "turnover"], columns)
+Here are 3 sample rows:
+{json.dumps(sample_rows, indent=2)}
 
-    # Cost columns — grab all that look like costs
-    cost_keywords = ["cost", "expense", "spend", "labour", "labor", "logistics",
-                     "transport", "fertiliser", "fertilizer", "processing",
-                     "maintenance", "overhead", "wages", "salary"]
-    cost_cols = []
-    for c in columns:
-        cl = c.lower().replace(" ", "_").replace("-", "_")
-        if any(kw in cl for kw in cost_keywords):
-            cost_cols.append(c)
+Map each column to ONE of these standard categories. Return ONLY a JSON object, no markdown, no explanation:
+{{
+  "date": "column_name_or_null",
+  "estate": "column_name_or_null",
+  "bloc": "column_name_or_null",
+  "yield": "column_name_or_null",
+  "revenue": "column_name_or_null",
+  "costs": ["list_of_cost_column_names"],
+  "supply_chain": ["list_of_supply_chain_column_names"],
+  "marketing": ["list_of_marketing_column_names"],
+  "other_numeric": ["list_of_other_numeric_column_names"]
+}}
 
-    # If no specific cost columns found, try to identify numeric non-revenue columns
-    if not cost_cols:
-        for c in columns:
-            if c not in [col_date, col_estate, col_bloc, col_yield, col_revenue]:
-                sample_val = raw[0].get(c)
-                if isinstance(sample_val, (int, float)):
-                    cost_cols.append(c)
+Rules:
+- "date" = any date/time/period column
+- "estate" = farm/plantation/site/location/estate name
+- "bloc" = block/section/zone/area/field within an estate
+- "yield" = production output in tonnes/kg
+- "revenue" = sales/income/turnover/gross receipts
+- "costs" = ALL expense/cost/spend/wages/salary/overhead columns
+- "supply_chain" = logistics/transport/shipping/delivery/freight/warehouse/storage columns
+- "marketing" = advertising/marketing/promo/branding/campaign columns
+- "other_numeric" = any remaining numeric columns not matched above
+- If a column doesn't match any category, put null
+- supply_chain and marketing columns should ALSO appear in costs if they represent expenses"""
+
+    try:
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": mapping_prompt}],
+            temperature=0,
+        )
+        mapping_text = response.choices[0].message.content.strip()
+        # Clean markdown fences if present
+        mapping_text = mapping_text.replace("```json", "").replace("```", "").strip()
+        col_map = json.loads(mapping_text)
+        _log(f"Unification Agent: LLM mapped columns → {json.dumps(col_map)}")
+    except Exception as e:
+        _log(f"Unification Agent: LLM mapping failed ({e}), falling back to keyword matching.")
+        col_map = _fallback_column_map(columns, raw)
+
+    # ── Apply mapping to build unified dataset ──────────────────────
+    col_date = col_map.get("date")
+    col_estate = col_map.get("estate")
+    col_bloc = col_map.get("bloc")
+    col_yield = col_map.get("yield")
+    col_revenue = col_map.get("revenue")
+    cost_cols = col_map.get("costs", []) or []
+    supply_cols = col_map.get("supply_chain", []) or []
+    marketing_cols = col_map.get("marketing", []) or []
+    other_cols = col_map.get("other_numeric", []) or []
+
+    # Merge all expense columns (deduplicated)
+    all_cost_cols = list(dict.fromkeys(cost_cols + supply_cols + marketing_cols))
+
+    def safe_float(val):
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
 
     unified = []
     for r in raw:
-        def safe_float(val):
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return 0.0
-
-        # Build cost breakdown from whatever cost columns exist
         cost_breakdown = {}
         total_cost = 0
-        for cc in cost_cols:
-            label = cc.lower().replace("_ngn", "").replace("_cost", "").replace("cost_", "").strip()
-            val = safe_float(r.get(cc, 0))
-            cost_breakdown[label] = val
-            total_cost += val
+        for cc in all_cost_cols:
+            if cc and cc in r:
+                label = cc.lower().replace("_ngn", "").replace("_cost", "").replace("cost_", "")
+                label = label.replace("_usd", "").replace("_", " ").strip()
+                val = safe_float(r.get(cc, 0))
+                cost_breakdown[label] = val
+                total_cost += val
 
         revenue = safe_float(r.get(col_revenue, 0)) if col_revenue else 0
 
         unified.append({
-            "date": r.get(col_date, "unknown"),
+            "date": r.get(col_date, "unknown") if col_date else "unknown",
             "estate": r.get(col_estate, "Estate 1") if col_estate else "Estate 1",
             "bloc": r.get(col_bloc, "Bloc 1") if col_bloc else "Bloc 1",
             "yield_tonnes": safe_float(r.get(col_yield, 0)) if col_yield else 0,
@@ -153,15 +184,42 @@ def unify_data() -> str:
         })
 
     pipeline_state["unified_data"] = unified
-    pipeline_state["cost_categories"] = list(cost_breakdown.keys()) if cost_cols else []
+    pipeline_state["cost_categories"] = list(set(
+        k for r in unified for k in r.get("cost_breakdown", {}).keys()
+    ))
     estates = set(r["estate"] for r in unified)
 
-    mapping_info = {
-        "date": col_date, "estate": col_estate, "bloc": col_bloc,
-        "yield": col_yield, "revenue": col_revenue, "costs": cost_cols,
+    _log(f"Unification Agent: Data standardised across {len(estates)} estates. {len(all_cost_cols)} cost categories detected.")
+    return json.dumps({"records_unified": len(unified), "estates": list(estates), "column_mapping": col_map})
+
+
+def _fallback_column_map(columns, raw):
+    """Keyword-based fallback if LLM mapping fails."""
+    def find_col(keywords, cols):
+        for kw in keywords:
+            for c in cols:
+                if kw in c.lower().replace(" ", "_").replace("-", "_"):
+                    return c
+        return None
+
+    cost_keywords = ["cost", "expense", "spend", "labour", "labor", "logistics",
+                     "transport", "fertiliser", "fertilizer", "processing",
+                     "maintenance", "overhead", "wages", "salary", "freight",
+                     "marketing", "advertising", "promo", "shipping", "storage"]
+    cost_cols = [c for c in columns
+                 if any(kw in c.lower().replace(" ", "_") for kw in cost_keywords)]
+
+    return {
+        "date": find_col(["date", "day", "period", "time"], columns),
+        "estate": find_col(["estate", "farm", "plantation", "site", "location"], columns),
+        "bloc": find_col(["bloc", "block", "section", "zone", "area", "field"], columns),
+        "yield": find_col(["yield", "production", "output", "harvest", "tonnes"], columns),
+        "revenue": find_col(["revenue", "sales", "income", "turnover"], columns),
+        "costs": cost_cols,
+        "supply_chain": [],
+        "marketing": [],
+        "other_numeric": [],
     }
-    _log(f"Unification Agent: Data standardised across {len(estates)} estates. Mapped: {mapping_info}")
-    return json.dumps({"records_unified": len(unified), "estates": list(estates), "column_mapping": mapping_info})
 
 
 @function_tool
